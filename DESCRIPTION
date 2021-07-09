@@ -1,0 +1,28 @@
+Package: HiC-Harmony
+Version: 1.1.0
+Title: Bandwise batch correction of Hi-C data using Harmony
+Description: Tools to normalize (several) Hi-C data from replicates.
+Authors@R: c(
+	   person("Helen Huang", role = c("cre"), email = "helenhuang@g.ucla.edu"),
+	   person("Helen Huang", role = "aut"))
+Depends: R (>= 3.5.0), methods, BiocGenerics, SummarizedExperiment,
+        GenomicRanges
+Suggests: BiocStyle, knitr, rmarkdown, RUnit
+Imports: Rcpp (>= 0.12.12), IRanges, rhdf5, data.table, GenomeInfoDb,
+        S4Vectors, matrixStats, preprocessCore, sva, parallel, EBImage,
+        utils
+LinkingTo: Rcpp
+VignetteBuilder: knitr
+License: Artistic-2.0
+URL: https://github.com/helengracehuang/HiC-Harmony
+BugReports: https://github.com/helengracehuang/HiC-Harmony/issues
+biocViews: HiC, Preprocessing, Normalization, Software
+git_url: https://git.bioconductor.org/packages/bnbc
+git_branch: RELEASE_3_13
+git_last_commit: 210c4d2
+git_last_commit_date: 2021-07-08
+Date/Publication: 2021-07-08
+NeedsCompilation: yes
+Packaged: 2021-05-19 21:14:08 UTC; biocbuild
+Author: Helen Huang [cre, aut]
+Maintainer: Helen Huang <helenhuang@g.ucla.edu>

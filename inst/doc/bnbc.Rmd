@@ -1,0 +1,193 @@
+---
+title: "The bnbc User's Guide"
+shorttitle: "bnbc guide"
+author: 
+  - Kipper Fletez-Brant
+  - Kasper Daniel Hansen
+package: bnbc
+bibliography: bnbc.bib
+abstract: >
+  A comprehensive guide to using the bnbc package for normalizing Hi-C replicates.
+vignette: >
+  %\VignetteIndexEntry{bnbc User's Guide}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+output: 
+  BiocStyle::html_document:
+    toc_float: true
+---
+
+# Introduction
+
+The `r Biocpkg("bnbc")` package provides functionality to perform normalization and batch correction **across samples** on data obtained from Hi-C [@HiCassay] experiments.
+
+In this package we implement tools for general subsetting of and data extraction from sets of Hi-C contact matrices, as well as smoothing of contact matrices, cross-sample normalization and cross-sample batch effect correction methods.
+
+`r Biocpkg("bnbc")` expects as input 
+
+1. a `GRanges` object representing the genome assayed, with individual ranges having the width that is equal to the bin size used to partition the genome. 
+2. a `list` of (square) contact matrices.
+3. a `DataFrame` object containing sample-level covariates (i.e. gender, date of processing, etc).
+
+## Citing bnbc
+
+If you use this package, please cite [@bnbc].
+
+## Terminology
+
+It is well appreciated that Hi-C contact matrices exhibit an exponential decay in observed number of contacts as a function of the distance between the pair of interacting loci. In this work we operate, as has recently been done (i.e. [@HiCRep]), on the set of all loci interacting at a specific distance, one chromosome at a time. For a given distance $k$, the relevant set of loci are listed in each contact matrix as the entries comprising the $k$-th matrix diagonal (with the main diagonal being referred to as the first diagonal). We refer to these diagonals as matrix "bands".
+
+## Dependencies
+
+This document has the following dependencies
+
+```{r dependencies, warning=FALSE, message=FALSE}
+library(bnbc)
+```
+
+# The ContactGroup class from bnbc
+
+`r Biocpkg("bnbc")` uses the `ContactGroup` class to represent the set of contact matrices for a given set of genomic locis interactions. The class has 3 slots:
+
+- `rowData`: a `GRanges` object that has 1 element for each bin of the partitioned genome.
+- `colData`: a `DataFrame` object that contains information on each sample (i.e. gender).
+- `contacts`: a `list` of contact matrices.
+
+We expect each `ContactGroup` to represent data from 1 chromosome. We are thinking about a whole-genome container.  An example dataset for chromosome 22 is supplied with the package.
+
+```{r dataLoad}
+data(cgEx)
+cgEx
+```
+
+Creating a `ContactGroup` object requires specifying the 3 slots above:
+
+```{r create}
+cgEx <- ContactGroup(rowData=rowData(cgEx),
+                     contacts=contacts(cgEx),
+                     colData=colData(cgEx))
+```
+
+Note that in this example, we used the accessor methods for each of these slots; there are also corresponding 'setter' methods, such as `rowData(cgEx)<-`. 
+
+Printing a `ContactGroup` object gives the number of bins represented by the `rowData` slot, the width of the bin in terms of genomic distances (i.e. 100kb) and the number of samples:
+
+```{r print}
+cgEx
+```
+
+## Alternatives
+
+The `r Biocpkg("InteractionSet")` package contains a class called `InteractionSet` which is essentially an extension of the `ContactGroup` class. The internal storage format is different and `InteractionSet` is not restricted to square contact matrices like the `ContactGroup` class.  We are interested in porting the `bnbc()` function to using `InteractionSet`, but `bnbc()` extensively uses band matrices and we have optimized `r CRANpkg("Rcpp")`-based routines for getting and setting bands of normal matrices, which means `ContactGroup` is a pretty fast for our purposes.
+
+
+# Getting your data into bnbc
+
+To get data into `r Biocpkg("bnbc")` you need a list of contact matrices, one per sample. We assume the contact matrices are square, with no missing values. We do not require that data have been transformed or pre-processed by various bias correction software and provide methods for some simple pre-processing techniques.
+
+There is currently no standard Hi-C data format. Instead, different groups produces custom formats, often in forms of text files. Because contact matrices are square, it is common to only distribute the upper or lower triangular matrix.  In that case, you can use the following trick to make the matrix square:
+
+```{r contactTriang}
+mat <- matrix(1:9, nrow = 3, ncol = 3)
+mat[lower.tri(mat)] <- 0
+mat
+## Now we fill in the lower triangular matrix with the upper triangular
+mat[lower.tri(mat)] <- mat[upper.tri(mat)]
+mat
+```
+
+
+Below, we demonstrate the steps needed to convert a set of hypothetical contact matrices into a `ContactGroup` object. The object `upper.mats.list` is supposed to be a list of contact matrices, each represented as an upper triangular matrix. We also suppose `LociData` to be a `GenomicRanges` object containing the loci of the contact matrices, and `SampleData` to be a `DataFrame` of per-sample information (i.e. cell type, sample name etc). We first convert all contact matrices to be symmetric matrices, then use the constructor method `ContactGroup()` to create the object.
+
+```{r data_to_bnbc, eval=FALSE, echo=TRUE}
+## Example not run
+## Convert upper triangles to symmetry matrix
+MatsList <- lapply(upper.mats.list, function(M) {
+    M[lower.tri(M)] <- M[upper.tri(M)]
+})
+## Use ContactGroup constructor method
+cg <- ContactGroup(rowData = LociData, contacts = MatsList, colData = SampleData)
+```
+For this to work, the `contacts` list has to have the same names as the rownames of `colData`.
+
+## Getting your data out of `*.cooler` files
+
+The `.cooler` file format is widely adopted and supported by `bnbc`. We assume a simple cooler file format (see `?getChrCGFromCools` for a full description; importantly, we assume the same interactions are observed in all samples, even if some have a value of 0) of one resolution per file, generated by the `cooler` program. Our point of entry is to catalog which interactions are stored in the cooler file. We do this by generating an index of the positions of the file, using the function `getGenomeIdx()`.
+
+```{r cooler_get_genome_index}
+coolerDir <- system.file("cooler", package = "bnbc")
+cools <- list.files(coolerDir, pattern="cool$", full.names=TRUE)
+
+step <- 4e4
+
+bin.ixns.list <- bnbc:::getGenomeIdx(cools[1], step)
+bin.ixns <- bin.ixns.list$bin.ixns
+```
+We have, as output, a list `bin.ixns.list`, of two elements. The first is the element `bin.ixns`, which is a `data.table` object that lists the set of interactions observed in the cooler file. The other element is a `data.frame` object `bins`, which lists the set of genomic bins and their coordinates. These are a convenience used in some functions and generally are not of interest to the end user. 
+
+With our index, we can proceed to load our data into memory, one chromosome's data at a time (at this time our method does not handle \textit{trans}-interactions). We emphasize that with all observations from interactions between loci on one chromosome in memory, our algorithm is extremely efficient, with custom routines for matrix updating, and requires only pass over the data. 
+
+```{r cooler_get_cg}
+data(cgEx)
+cool.cg <- bnbc:::getChrCGFromCools(bin.ixns,
+                                    files = cools,
+                                    chr = "chr22",
+                                    colData = colData(cgEx)[1:2,])
+all.equal(contacts(cgEx)[[1]], contacts(cool.cg)[[1]])
+```
+
+In this example, we load the `ContactGroup` object `cgEx` into memory to compare with the representation of it in `cool` files generated by the `cooler` program. We then use the method `getChrCGFromCools()` to load an entire chromosome's interaction matrices (observed on all subjects) into memory. At this point, users have a valid `ContactGroup` object, and can proceed with their analyses as described in subsequent sections.
+
+
+# Working with bnbc contact matrices
+
+We provide setter and getter methods for manipulating individual matrix bands for contact matrices as well.  First, we have functions for working with bands of individual matrices (not bnbc related):
+
+```{r band_example}
+mat.1 <- contacts(cgEx)[[1]]
+mat.1[1000:1005, 1000:1005]
+b1 <- band(mat=mat.1, band.no=2)
+band(mat=mat.1, band.no=2) <- b1 + 1
+mat.1[1000:1005, 1000:1005]
+```
+
+In this example, the main diagonal of the contact matrix is also the main diagonal of the printed example above.  Similarly, band number two, which is also the first off-diagonal, is also the first off-diagonal of the printed example.  As can be seen from the printed example, updating a matrix band is a symmetric operation, and updated the first off-diagonal in both the upper and lower triangles of the matrix.
+
+To utilize this across a list of contact matrices, we have the `cgApply()` function which applies the same function to each of the matrices. It supports parallelization using `r CRANpkg("parallel")`.
+
+# Per-Sample Adjustments
+
+To adjust for differences in depth sequencing, we first apply the `logCPM` transform [@voom] to each contact matrix.  This transformation divides each contact matrix by the sum of the upper triangle of that matrix (adding 0.5 to each matrix cell and 1 to sum of the upper triangle), scales the resulting matrix by $10^6$ and finally takes the log of the scaled matrix (a fudge factor is added to both numerator and denominator prior to taking the logarithm)..
+
+```{r logcpm}
+cgEx.cpm <- logCPM(cgEx)
+```
+
+Additionally, we smooth each contact matrix with a square smoothing kernel to reduce artifacts of the choice of bin width.  We support both box and Gaussian smoothers.
+
+```{r smoothing}
+cgEx.smooth <- boxSmoother(cgEx.cpm, h=5)
+## or
+## cgEx.smooth <- gaussSmoother(cgEx.cpm, radius=3, sigma=4)
+```
+
+# Cross Sample Normalization
+
+BNBC operates on each matrix band separately.  For each matrix band $k$, we extract each sample's observation on that band and form a matrix $M$ from those bands;  if band $k$ has $d$ entries, then after `logCPM` transformation,  $M \in \mathbb{R}^{n \times d}$.  For each such matrix, we first apply quantile normalization [@QN] to correct for distributional differences, and then ComBat [@ComBat] to correct for batch effects.
+
+Here we will use `r Biocpkg("bnbc")` to do batch correction on the first 10 matrix bands, beginning with the second matrix band and ending on the eleventh.
+
+```{r bnbc}
+cgEx.bnbc <- bnbc(cgEx.smooth, batch=colData(cgEx.smooth)$Batch,
+                  threshold=1e7, step=4e4, nbands=11, verbose=FALSE)
+```
+
+# sessionInfo()
+
+```{r sessionInfo, echo=FALSE}
+sessionInfo()
+```
+
+# References
+
+
